@@ -1,0 +1,7 @@
+# This file is activated automatically by `dsh plugin --profile web add …`.
+# The Bundle observes host session events and injects an independent UI script.
+- insert:
+    - id: internet-meme-subtitles
+      name: dsh-plugin-internet-meme
+      inject:
+        - webServer
