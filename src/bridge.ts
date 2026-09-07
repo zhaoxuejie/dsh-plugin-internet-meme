@@ -63,6 +63,8 @@ import { enqueue, type Pulse, type PulseKind, type QueuedMeme } from './queue'
   let previewStatus = ''
   let previewPending: { id: string, httpOk: boolean, received: boolean, rendered: boolean, timer: number, controller: AbortController } | undefined
 
+  let audioContext: AudioContext | undefined
+  let lastSoundAt = 0
   function loadSettings(): Settings {
     try { return normalizeSettings(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')) } catch { return { ...defaults } }
   }
@@ -154,6 +156,42 @@ import { enqueue, type Pulse, type PulseKind, type QueuedMeme } from './queue'
     scheduleNextMeme()
   }
 
+  /** Sound derives only from event category and never speaks session content. */
+  function soundIsAllowed() {
+    return settings.enabled && settings.soundEnabled && settings.soundVolume > 0 && document.visibilityState === 'visible' && !matchMedia('(prefers-reduced-motion: reduce)').matches
+  }
+  async function unlockAudio() {
+    if (!soundIsAllowed()) return
+    audioContext ??= new AudioContext()
+    if (audioContext.state !== 'running') await audioContext.resume()
+  }
+  function soundFor(pulse: Pulse) {
+    if (pulse.kind === 'tool-result' && pulse.failed === true) return { frequency: 180, type: 'sawtooth' as OscillatorType }
+    if (pulse.kind === 'turn-end') return { frequency: 659, type: 'triangle' as OscillatorType }
+    if (pulse.kind === 'tool-result') return { frequency: 740, type: 'sine' as OscillatorType }
+    if (pulse.kind === 'tool-call') return { frequency: 520, type: 'sine' as OscillatorType }
+    return { frequency: 420, type: 'sine' as OscillatorType }
+  }
+  function announceFor(pulse: Pulse) {
+    if (settings.soundMode !== 'announce' || !('speechSynthesis' in window) || window.speechSynthesis.speaking) return
+    const message = pulse.kind === 'tool-result' && pulse.failed === true ? '工具执行失败' : pulse.kind === 'turn-end' ? '本轮结束' : undefined
+    if (!message) return
+    const utterance = new SpeechSynthesisUtterance(message)
+    utterance.lang = 'zh-CN'; utterance.rate = 1.1; utterance.volume = settings.soundVolume / 100
+    window.speechSynthesis.speak(utterance)
+  }
+  function playAudioFeedback(pulse: Pulse) {
+    if (!soundIsAllowed() || Date.now() - lastSoundAt < 2200) return
+    lastSoundAt = Date.now()
+    void unlockAudio().then(() => {
+      if (!audioContext || !soundIsAllowed()) return
+      const context = audioContext, sound = soundFor(pulse), oscillator = context.createOscillator(), gain = context.createGain(), now = context.currentTime
+      oscillator.type = sound.type; oscillator.frequency.setValueAtTime(sound.frequency, now)
+      gain.gain.setValueAtTime(0.0001, now); gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, settings.soundVolume / 900), now + 0.015); gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16)
+      oscillator.connect(gain).connect(context.destination); oscillator.start(now); oscillator.stop(now + 0.17)
+      announceFor(pulse)
+    }).catch(() => { if (settings.diagnostics) console.info('[internet-meme] audio unavailable') })
+  }
   function text(value: string, className?: string) {
     const node = document.createElement('div'); node.textContent = value; if (className) node.className = className; return node
   }
@@ -222,6 +260,21 @@ import { enqueue, type Pulse, type PulseKind, type QueuedMeme } from './queue'
     section.append(control('弹幕配色', '按事件类型使用颜色，或统一使用克制单色。', select(settings.colorMode, [['event', '按事件配色'], ['mono', '克制单色']], (next) => { settings.colorMode = next as Settings['colorMode']; saveSettings() })))
     section.append(control('显示事件图标', '在文案左侧显示思考、工具和完成状态图标。', checkbox(settings.showIcons, (next) => { settings.showIcons = next; saveSettings() })))
     section.append(control('预览效果', '不调用模型，使用同一条事件流展示一条工具类弹幕。', previewButton()))
+    section.append(control('提示音', '默认关闭；页面失焦或系统启用减少动态效果时不播放。', checkbox(settings.soundEnabled, (next) => {
+      settings.soundEnabled = next; saveSettings()
+      if (next) void unlockAudio()
+    })))
+    if (settings.soundEnabled) {
+      section.append(control('声音模式', '状态提示音可提示所有事件；朗读只用于失败和本轮结束。', select(settings.soundMode, [['status', '仅状态提示音'], ['announce', '完成与失败时朗读']], (next) => { settings.soundMode = next as Settings['soundMode']; saveSettings() })))
+      const soundRange = document.createElement('input'); soundRange.type = 'range'; soundRange.min = '0'; soundRange.max = '100'; soundRange.step = '1'; soundRange.value = String(settings.soundVolume); soundRange.className = 'dsh-meme-range dsh-meme-sound-range'
+      const soundRow = control(`提示音音量 ${settings.soundVolume}%`, '连续事件至少间隔 2.2 秒；朗读不包含热梗或会话内容。', soundRange)
+      soundRange.addEventListener('input', () => {
+        settings.soundVolume = Number(soundRange.value)
+        soundRow.querySelector('.dsh-meme-setting-label')!.textContent = `提示音音量 ${settings.soundVolume}%`
+      })
+      soundRange.addEventListener('change', () => saveSettings(false))
+      section.append(soundRow)
+    }
     const previewFeedback = text(previewStatus, 'dsh-meme-preview-status dsh-meme-setting-hint'); previewFeedback.setAttribute('role', 'status'); section.append(previewFeedback)
     section.append(control('字幕字号', '影响右侧上浮字幕的阅读尺寸。', select(settings.fontSize, [['small', '小'], ['normal', '中'], ['large', '大']], (next) => { settings.fontSize = next; saveSettings() })))
     const range = document.createElement('input'); range.type = 'range'; range.min = '35'; range.max = '100'; range.step = '1'; range.value = String(settings.opacity); range.className = 'dsh-meme-range'
@@ -319,6 +372,7 @@ import { enqueue, type Pulse, type PulseKind, type QueuedMeme } from './queue'
       }
       if (settings.diagnostics) console.info('[internet-meme]', pulse)
       show(messageFor(pulse), pulse)
+      playAudioFeedback(pulse)
     } catch (error) { if (settings.diagnostics) console.warn('[internet-meme] bad pulse', error) } }
     source.onerror = () => { if (settings.diagnostics) console.info('[internet-meme] reconnecting event stream') }
   }

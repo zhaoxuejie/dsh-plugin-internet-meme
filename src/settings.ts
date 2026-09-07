@@ -1,4 +1,4 @@
-export const defaults = { enabled: true, density: 'normal', fontSize: 'normal', opacity: 86, blur: 'soft', theme: 'classic', customLines: '', colorMode: 'event', showIcons: true, maxVisible: 4, diagnostics: false }
+export const defaults = { enabled: true, density: 'normal', fontSize: 'normal', opacity: 86, blur: 'soft', theme: 'classic', customLines: '', colorMode: 'event', showIcons: true, maxVisible: 4, diagnostics: false, soundEnabled: false, soundMode: 'status', soundVolume: 55 }
 export type Settings = typeof defaults
 
 /** Validate persisted settings, including valid JSON with incorrect field types. */
@@ -18,5 +18,8 @@ export function normalizeSettings(value: unknown): Settings {
     showIcons: boolean('showIcons', defaults.showIcons),
     maxVisible: typeof data.maxVisible === 'number' && [3, 4, 5].includes(data.maxVisible) ? data.maxVisible : defaults.maxVisible,
     diagnostics: boolean('diagnostics', defaults.diagnostics),
-  }
+    soundEnabled: boolean('soundEnabled', defaults.soundEnabled),
+    soundMode: choice('soundMode', ['status', 'announce'], defaults.soundMode),
+    soundVolume: typeof data.soundVolume === 'number' && Number.isFinite(data.soundVolume) ? Math.round(Math.min(100, Math.max(0, data.soundVolume))) : defaults.soundVolume,
 }
+  }
