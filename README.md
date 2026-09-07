@@ -1,6 +1,84 @@
 # DeepSeek Harness：互联网热梗字幕插件
 
-这是可被 DeepSeek Harness profile 安装的 **Bundle**，不是 Harness 源码内部包，也不是 Vite 演示。
+给 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) Web 页面添加一层轻量的“热梗弹幕”字幕：Agent 思考、调用工具、工具返回和本轮结束时，右侧会显示向上漂移的短句提示。
+
+这是可被 DeepSeek Harness profile 安装的 **Bundle**，不是 Harness 源码内部包，也不是 Vite 演示。插件只增强浏览器界面，不会改变模型对话、工具调用或会话记录。
+
+## 适合谁使用
+
+- 想在 DSH Web 中更直观地感知 Agent 执行节奏的用户。
+- 想自定义字幕主题、颜色、密度与文案，但不希望把内容写进会话的用户。
+- 希望提示音只在本地播放，并且不上传会话文本的用户。
+
+## 功能一览
+
+| 功能 | 说明 |
+| --- | --- |
+| 事件字幕 | 覆盖思考、工具调用、工具结果和本轮结束五类生命周期事件。 |
+| 本地设置 | 在 DSH 设置中提供独立的“热梗字幕”页面，刷新后保留在当前浏览器。 |
+| 可定制外观 | 四套主题、自定义文案、密度、字号、配色、图标、透明度、模糊和同屏上限。 |
+| 预览链路 | “预览弹幕”使用 Host → SSE → 浏览器的真实渲染路径，并提供成功或失败反馈。 |
+| 本地声音 | 可选合成提示音和固定状态朗读；默认关闭，不下载外部音频。 |
+| 隐私边界 | 不读取或传输回答正文、推理内容、工具参数和工具结果正文。 |
+
+## 快速安装
+
+### 前提条件
+
+- 已能在本机正常运行 DeepSeek Harness Web profile。
+- 已安装 Git、Node.js、pnpm 和 `dsh` CLI。
+
+### 从 GitHub 安装
+
+在任意本地工作目录执行：
+
+```powershell
+git clone https://github.com/zhaoxuejie/dsh-plugin-internet-meme.git
+cd dsh-plugin-internet-meme
+pnpm install
+pnpm run build
+dsh plugin --profile web add link:.
+dsh --profile web --dump-config
+```
+
+配置输出中应同时出现 `# == dsh-plugin-internet-meme` 与 `internet-meme-subtitles`。完成安装后，请自行重启对应的 DSH Web profile。
+
+`link:.` 使 profile 直接使用当前本地目录，适合从源码安装和后续更新；请保留这个项目目录。若你更希望安装一份独立副本，也可以将该命令改为 `dsh plugin --profile web add file:.`。
+
+### 启用与试听
+
+1. 打开或刷新 DSH Web 页面，进入“设置”。
+2. 在左侧选择“热梗字幕”。
+3. 保持“显示字幕”开启，点击“预览弹幕”确认字幕出现。
+4. 需要声音时，开启“提示音”并调高音量；再次点击“预览弹幕”会立即试听一次提示音。
+
+提示音默认关闭。页面失焦、系统开启“减少动态效果”、字幕关闭或音量为 0 时不会播放。
+
+## 更新
+
+从本仓库安装时，更新流程如下：
+
+```powershell
+git pull
+pnpm install
+pnpm run build
+```
+
+之后请自行重启 DSH Web profile。使用 `link:.` 安装时无需重复执行 `dsh plugin add`；使用 `file:.` 安装时，请重新执行一次安装命令。
+
+## 常见问题
+
+### 设置里没有“热梗字幕”
+
+执行 `dsh --profile web --dump-config`，确认输出包含插件名和 `internet-meme-subtitles`。若没有，请在项目根目录重新运行安装命令，并在完成后重启对应 profile。
+
+### 点击预览没有字幕
+
+确认页面已刷新、字幕开关已开启，并查看预览按钮下方的状态说明。预览会检查 HTTP 请求、SSE 事件和可见字幕三个环节；若提示超时，重启 profile 后重试。
+
+### 点击预览没有声音
+
+确认“提示音”已经开启、音量大于 0、浏览器标签页处于前台，并检查系统输出设备和浏览器静音状态。提示音是浏览器本地合成音，不依赖网络资源。
 
 ```text
 src/index.ts       # Host 事件白名单 + 静态脚本/SSE 路由
@@ -9,19 +87,18 @@ cordis.patch.yml   # dsh.bundle 激活层
 package.json       # 标准 dsh.bundle 外部包声明
 ```
 
-## 安装
+## 开发环境安装
 
-在本插件根目录先构建，再安装到 Web profile：
+如果你已克隆本仓库并希望从源码开发，可在本插件根目录构建后安装到 Web profile：
 
 ```powershell
 pnpm install
 pnpm run build
-dsh plugin --profile web add file:.
+dsh plugin --profile web add link:.
 dsh --profile web --dump-config
-dsh web
 ```
 
-`--dump-config` 输出中应出现 `# == dsh-plugin-internet-meme` 与 `internet-meme-subtitles`。安装或更新 Bundle 后需重启 Web profile。
+`--dump-config` 输出中应出现 `# == dsh-plugin-internet-meme` 与 `internet-meme-subtitles`。安装或更新 Bundle 后需自行重启 Web profile。
 
 从 Git 安装时，`prepare` 会构建 `lib/`；pnpm 10+ 可能要求在该 profile 的 `pnpm-workspace.yaml` 为本包显式设置 `allowBuilds: true`，然后重新执行 add。
 
