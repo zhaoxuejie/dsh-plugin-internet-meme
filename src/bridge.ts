@@ -231,6 +231,7 @@ import { enqueue, type Pulse, type PulseKind, type QueuedMeme } from './queue'
   async function runPreview() {
     if (previewPending) return
     if (!settings.enabled) { previewStatus = '请先开启“显示字幕”，再预览。'; updateFeedback(); return }
+    if (settings.soundEnabled) void unlockAudio()
     const id = crypto.randomUUID()
     const controller = new AbortController()
     const timer = window.setTimeout(() => {

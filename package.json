@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-internet-meme",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Zero-intrusion meme danmaku subtitles for the DeepSeek Harness Web profile",
   "type": "module",
   "main": "./lib/index.js",
