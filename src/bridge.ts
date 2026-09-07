@@ -1,3 +1,6 @@
+import { defaults, normalizeSettings, type Settings } from './settings'
+import { enqueue, type Pulse, type PulseKind, type QueuedMeme } from './queue'
+
 (() => {
   const ROOT_ID = 'dsh-internet-meme-overlay'
   const SETTINGS_ID = 'dsh-internet-meme-settings'
@@ -5,13 +8,8 @@
   const SETTINGS_PANE_ID = 'dsh-internet-meme-settings-pane'
   const PREVIEW_PATH = '/plugins/dsh-plugin-internet-meme/preview'
   const STORAGE_KEY = 'dsh-plugin-internet-meme.settings.v2'
-  const defaults = { enabled: true, density: 'normal', fontSize: 'normal', opacity: 86, blur: 'soft', theme: 'classic', customLines: '', colorMode: 'event', showIcons: true, maxVisible: 4, diagnostics: false }
 
-  type PulseKind = 'turn-start' | 'step-start' | 'tool-call' | 'tool-result' | 'turn-end'
-  type Pulse = { kind: PulseKind, toolName?: string, callId?: string, failed?: boolean }
   type Theme = Record<PulseKind, string[]>
-  type Settings = typeof defaults
-  type QueuedMeme = { message: string, kind: PulseKind, repeat: number }
 
   const pulseVisuals: Record<PulseKind, { icon: string, tone: string }> = {
     'turn-start': { icon: '💭', tone: 'think' },
@@ -27,28 +25,28 @@
       'step-start': ['再推演一轮，稳住别慌', '思路正在展开'],
       'tool-call': ['准备调用 {tool}，希望不要翻车', '{tool} 出动，查一下线索'],
       'tool-result': ['{tool} 返回了，线索到手', '{tool} 已交卷，继续推进'],
-      'turn-end': ['本轮收工，答案已送达', '思考结束，稳稳落地'],
+      'turn-end': ['本轮结束', '这一轮先告一段落'],
     } },
     workplace: { label: '职场摸鱼', lines: {
       'turn-start': ['工位灯亮了，开始加班式思考', '老板路过，假装很忙'],
       'step-start': ['再开一个脑内会议', '方案正在走审批流程'],
       'tool-call': ['请 {tool} 同事支援一下', '{tool}，这份活交给你了'],
       'tool-result': ['{tool} 回消息了，继续跟进', '{tool} 已回执，项目没黄'],
-      'turn-end': ['今日份交付已打卡', '下班前再保存一下成果'],
+      'turn-end': ['本轮工作告一段落', '这一轮会议结束了'],
     } },
     anime: { label: '二次元燃系', lines: {
       'turn-start': ['思考之力，启动！', '大脑领域展开'],
       'step-start': ['下一回合推理开始', '线索正在觉醒'],
       'tool-call': ['召唤 {tool}！', '{tool}，拜托你了！'],
       'tool-result': ['{tool} 带回了关键情报', '{tool} 的力量到账'],
-      'turn-end': ['这一战顺利收束', '答案落幕，未完待续'],
+      'turn-end': ['这一回合结束', '本轮落幕，未完待续'],
     } },
     cyber: { label: '赛博终端', lines: {
       'turn-start': ['神经网络接入中…', '推理核心开始升温'],
       'step-start': ['新一轮计算已排队', '数据流正在重组'],
       'tool-call': ['执行模块：{tool}', '向 {tool} 发起请求'],
       'tool-result': ['{tool} 回传数据包', '{tool} 校验完成'],
-      'turn-end': ['任务流已关闭', '输出已同步到终端'],
+      'turn-end': ['本轮任务流已关闭', '当前回合结束'],
     } },
   }
   const toolNames = new Map<string, string>()
@@ -61,9 +59,12 @@
   const laneReadyAt = [0, 0, 0]
   const pendingMemes: QueuedMeme[] = []
   let queueTimer: number | undefined
+  let storageWarning = ''
+  let previewStatus = ''
+  let previewPending: { id: string, httpOk: boolean, received: boolean, rendered: boolean, timer: number, controller: AbortController } | undefined
 
   function loadSettings(): Settings {
-    try { return { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') } } catch { return { ...defaults } }
+    try { return normalizeSettings(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')) } catch { return { ...defaults } }
   }
   function random<T>(items: T[]): T { return items[Math.floor(Math.random() * items.length)] }
   function applyVisualSettings() {
@@ -72,8 +73,22 @@
     root.style.setProperty('--meme-opacity', String(settings.opacity / 100))
     root.style.setProperty('--meme-blur', settings.blur === 'none' ? '0px' : settings.blur === 'soft' ? '1px' : '2.5px')
   }
-  function saveSettings() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); applyVisualSettings()
+  function updateFeedback() {
+    for (const section of settingsSections) {
+      const storage = section.querySelector<HTMLElement>('.dsh-meme-storage-status')
+      const preview = section.querySelector<HTMLElement>('.dsh-meme-preview-status')
+      const button = section.querySelector<HTMLButtonElement>('.dsh-meme-preview-button')
+      if (storage && storage.textContent !== storageWarning) storage.textContent = storageWarning
+      if (preview && preview.textContent !== previewStatus) preview.textContent = previewStatus
+      if (button) button.disabled = !!previewPending
+    }
+  }
+  function saveSettings(render = true) {
+    settings = normalizeSettings(settings)
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); storageWarning = '' }
+    catch { storageWarning = '设置已在本页生效，但无法保存；刷新后可能恢复原设置。' }
+    applyVisualSettings()
+    if (!render) { updateFeedback(); return }
     for (const section of settingsSections) {
       if (section.isConnected) renderSettingsSection(section)
       else settingsSections.delete(section)
@@ -89,6 +104,8 @@
   function messageFor(pulse: Pulse) {
     if (pulse.kind === 'tool-call' && pulse.callId) toolNames.set(pulse.callId, pulse.toolName || '工具')
     const tool = pulse.toolName || (pulse.callId ? toolNames.get(pulse.callId) : undefined) || '工具'
+    if (pulse.kind === 'tool-result' && pulse.failed === true) return `${tool} 执行失败，请查看工具状态`
+    if (pulse.kind === 'tool-result' && pulse.failed !== false) return `${tool} 已返回，请查看工具状态`
     const custom = settings.customLines.split('\n').map((line) => line.trim()).filter(Boolean)
     const lines = settings.theme === 'custom' && custom.length ? custom : themes[settings.theme]?.lines[pulse.kind] || themes.classic.lines[pulse.kind]
     return random(lines).replaceAll('{tool}', tool)
@@ -107,8 +124,8 @@
     }
     const next = pendingMemes.shift()
     if (!next) return
-    while (lane.children.length >= settings.maxVisible) lane.firstElementChild?.remove()
-    const visual = pulseVisuals[next.kind]
+    while (lane.firstElementChild && lane.children.length >= settings.maxVisible) lane.firstElementChild.remove()
+    const visual = next.failed === true ? { icon: '⚠️', tone: 'error' } : pulseVisuals[next.kind]
     const item = document.createElement('div'); item.className = `dsh-meme-item dsh-meme-tone-${visual.tone}`
     item.style.setProperty('--meme-x', `${[0, 54, 108][laneIndex]}px`)
     if (settings.showIcons) {
@@ -116,16 +133,24 @@
     }
     const copy = document.createElement('span'); copy.className = 'dsh-meme-item-copy'; copy.textContent = next.repeat > 1 ? `${next.message} × ${next.repeat}` : next.message
     item.append(copy); lane.append(item); live.textContent = copy.textContent
+    if (next.previewId) {
+      const confirmVisible = () => {
+        const pending = previewPending
+        if (!pending || pending.id !== next.previewId) return
+        const style = getComputedStyle(item)
+        if (settings.enabled && item.isConnected && document.visibilityState === 'visible' && Number(style.opacity) > 0 && item.getBoundingClientRect().height > 0) {
+          pending.rendered = true; completePreview()
+        } else window.requestAnimationFrame(confirmVisible)
+      }
+      window.requestAnimationFrame(confirmVisible)
+    }
     laneReadyAt[laneIndex] = now + launchInterval()
     window.setTimeout(() => item.remove(), lifetime())
     if (pendingMemes.length) window.setTimeout(scheduleNextMeme, 0)
   }
-  function show(message: string, kind: PulseKind) {
+  function show(message: string, pulse: Pulse) {
     if (!settings.enabled) return
-    const last = pendingMemes.at(-1)
-    if (last && last.kind === kind && (kind === 'step-start' || kind === 'tool-call')) last.repeat += 1
-    else pendingMemes.push({ message, kind, repeat: 1 })
-    while (pendingMemes.length > 8) pendingMemes.shift()
+    enqueue(pendingMemes, { ...pulse, message, repeat: 1 })
     scheduleNextMeme()
   }
 
@@ -148,32 +173,69 @@
   }
   function previewButton() {
     const node = document.createElement('button'); node.type = 'button'; node.className = 'dsh-meme-preview-button'; node.textContent = '预览弹幕'
-    node.addEventListener('click', async () => {
-      try { await fetch(PREVIEW_PATH, { method: 'POST' }) }
-      catch { show('预览弹幕已就位', 'tool-call') }
-    })
+    node.disabled = !!previewPending
+    node.addEventListener('click', runPreview)
     return node
+  }
+  function finishPreview(message: string) {
+    const pending = previewPending
+    if (pending) {
+      window.clearTimeout(pending.timer); pending.controller.abort()
+      for (let index = pendingMemes.length - 1; index >= 0; index--) {
+        if (pendingMemes[index].previewId === pending.id) pendingMemes.splice(index, 1)
+      }
+    }
+    previewPending = undefined; previewStatus = message; updateFeedback()
+  }
+  function completePreview() {
+    if (previewPending?.httpOk && previewPending.received && previewPending.rendered) finishPreview('预览成功：事件已接收，字幕已显示。')
+  }
+  async function runPreview() {
+    if (previewPending) return
+    if (!settings.enabled) { previewStatus = '请先开启“显示字幕”，再预览。'; updateFeedback(); return }
+    const id = crypto.randomUUID()
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      if (previewPending?.id === id) finishPreview(previewPending.received ? '预览超时：尚未确认请求完成及字幕显示，请保持页面可见后重试。' : '预览超时：未收到对应事件，请检查连接或重启 Web profile。')
+    }, 12000)
+    previewPending = { id, httpOk: false, received: false, rendered: false, timer, controller }
+    previewStatus = '正在检查预览链路…'; updateFeedback()
+    try {
+      const response = await fetch(PREVIEW_PATH, { method: 'POST', headers: { 'X-Meme-Preview-Id': id }, signal: controller.signal })
+      if (previewPending?.id !== id) return
+      if (!response.ok) { finishPreview('预览失败：HTTP ' + response.status + '，请检查插件服务。'); return }
+      previewPending.httpOk = true; completePreview()
+    } catch {
+      if (previewPending?.id === id) finishPreview('预览失败：无法连接插件服务，请检查网络或重启 Web profile。')
+    }
   }
   function renderSettingsSection(section: HTMLElement) {
     section.replaceChildren()
     section.append(text('热梗字幕', 'dsh-meme-settings-title'), text('只影响本浏览器的字幕显示，不进入模型消息流。', 'dsh-meme-settings-description'))
+    const storageStatus = text(storageWarning, 'dsh-meme-storage-status dsh-meme-setting-hint'); storageStatus.setAttribute('role', 'status'); section.append(storageStatus)
     section.append(control('显示字幕', '关闭后不再显示新的弹幕。', checkbox(settings.enabled, (next) => { settings.enabled = next; saveSettings() })))
     section.append(control('热梗主题', '选择字幕文案的风格。', select(settings.theme, [
       ['classic', themes.classic.label], ['workplace', themes.workplace.label], ['anime', themes.anime.label], ['cyber', themes.cyber.label], ['custom', '自定义文案池'],
     ], (next) => { settings.theme = next; saveSettings() })))
     section.append(control('弹幕密度', '决定轨道发射间隔；密度越高，节奏越快。', select(settings.density, [['quiet', '安静'], ['normal', '标准'], ['busy', '热闹']], (next) => { settings.density = next; saveSettings() })))
-    section.append(control('最大同屏条数', '达到上限时自动让最早的字幕淡出，避免遮挡。', select(String(settings.maxVisible), [['3', '3 条'], ['4', '4 条'], ['5', '5 条']], (next) => { settings.maxVisible = Number(next) as Settings['maxVisible']; saveSettings() })))
+    section.append(control('最大同屏条数', '达到上限时移除最早的字幕，避免遮挡。', select(String(settings.maxVisible), [['3', '3 条'], ['4', '4 条'], ['5', '5 条']], (next) => { settings.maxVisible = Number(next) as Settings['maxVisible']; saveSettings() })))
     section.append(control('弹幕配色', '按事件类型使用颜色，或统一使用克制单色。', select(settings.colorMode, [['event', '按事件配色'], ['mono', '克制单色']], (next) => { settings.colorMode = next as Settings['colorMode']; saveSettings() })))
     section.append(control('显示事件图标', '在文案左侧显示思考、工具和完成状态图标。', checkbox(settings.showIcons, (next) => { settings.showIcons = next; saveSettings() })))
     section.append(control('预览效果', '不调用模型，使用同一条事件流展示一条工具类弹幕。', previewButton()))
+    const previewFeedback = text(previewStatus, 'dsh-meme-preview-status dsh-meme-setting-hint'); previewFeedback.setAttribute('role', 'status'); section.append(previewFeedback)
     section.append(control('字幕字号', '影响右侧上浮字幕的阅读尺寸。', select(settings.fontSize, [['small', '小'], ['normal', '中'], ['large', '大']], (next) => { settings.fontSize = next; saveSettings() })))
     const range = document.createElement('input'); range.type = 'range'; range.min = '35'; range.max = '100'; range.step = '1'; range.value = String(settings.opacity); range.className = 'dsh-meme-range'
-    range.addEventListener('input', () => { settings.opacity = Number(range.value); saveSettings() })
-    section.append(control(`透明度 ${settings.opacity}%`, '越低越轻，越高越醒目。', range))
+    const opacityRow = control(`透明度 ${settings.opacity}%`, '越低越轻，越高越醒目。', range)
+    range.addEventListener('input', () => {
+      settings.opacity = Number(range.value); applyVisualSettings()
+      opacityRow.querySelector('.dsh-meme-setting-label')!.textContent = `透明度 ${settings.opacity}%`
+    })
+    range.addEventListener('change', () => saveSettings(false))
+    section.append(opacityRow)
     section.append(control('顶部淡出模糊', '字幕上浮到顶部时的虚化程度。', select(settings.blur, [['none', '关闭'], ['soft', '轻柔'], ['strong', '明显']], (next) => { settings.blur = next; saveSettings() })))
-    section.append(control('诊断日志', '仅在浏览器控制台输出匿名事件元数据。', checkbox(settings.diagnostics, (next) => { settings.diagnostics = next; saveSettings() })))
+    section.append(control('诊断日志', '仅在浏览器控制台输出事件元数据，可能包含工具名和调用 ID。', checkbox(settings.diagnostics, (next) => { settings.diagnostics = next; saveSettings() })))
     if (settings.theme === 'custom') {
-      const custom = document.createElement('label'); custom.className = 'dsh-meme-custom'; custom.append(text('自定义文案池（每行一条；可用 {tool} 代表工具名）', 'dsh-meme-setting-label'))
+      const custom = document.createElement('label'); custom.className = 'dsh-meme-custom'; custom.append(text('自定义文案池（最多 100 条，每条 200 字符；可用 {tool} 代表工具名；失败与未知结果使用固定提示）', 'dsh-meme-setting-label'))
       const area = document.createElement('textarea'); area.rows = 5; area.placeholder = '例如：{tool} 来了，大家让一让'; area.value = settings.customLines
       area.addEventListener('change', () => { settings.customLines = area.value; saveSettings() }); custom.append(area); section.append(custom)
     }
@@ -241,14 +303,23 @@
     if (document.getElementById('dsh-internet-meme-styles')) return
     const style = document.createElement('style'); style.id = 'dsh-internet-meme-styles'
     style.textContent = `
-      #${ROOT_ID}{--meme-opacity:.86;--meme-blur:1px;position:fixed;z-index:2147483000;right:18px;bottom:14px;width:min(420px,calc(100vw - 32px));height:min(66vh,620px);pointer-events:none;font-family:ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;color:var(--dsw-alias-label-primary,#fff);overflow:hidden}#${ROOT_ID}[data-enabled="false"]{display:none}.dsh-meme-lane{position:relative;width:100%;height:100%}.dsh-meme-item{--meme-accent:#8b7cff;position:absolute;right:var(--meme-x,0px);bottom:6px;display:inline-flex;align-items:center;gap:7px;max-width:calc(100% - var(--meme-x) - 6px);padding:6px 10px;border-radius:999px;background:linear-gradient(115deg,color-mix(in srgb,var(--meme-accent) 17%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-3,#29243a) 90%,transparent));border:1px solid color-mix(in srgb,var(--meme-accent) 54%,transparent);box-shadow:0 8px 28px rgba(0,0,0,.16);font-size:14px;line-height:1.4;white-space:nowrap;overflow:hidden;opacity:0;animation:dshMemeFloat 10.5s linear forwards;will-change:transform,opacity,filter}.dsh-meme-tone-think{--meme-accent:#8b7cff}.dsh-meme-tone-tool{--meme-accent:#f2a93b}.dsh-meme-tone-result{--meme-accent:#35bf9b}.dsh-meme-tone-done{--meme-accent:#ef70ad}#${ROOT_ID}[data-color-mode="mono"] .dsh-meme-item{--meme-accent:#9892aa}.dsh-meme-item-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;border-radius:50%;background:color-mix(in srgb,var(--meme-accent) 23%,transparent);font-size:12px;line-height:1}.dsh-meme-item-copy{min-width:0;overflow:hidden;text-overflow:ellipsis}#${ROOT_ID}[data-font="small"] .dsh-meme-item{font-size:12px}#${ROOT_ID}[data-font="large"] .dsh-meme-item{font-size:17px}#${ROOT_ID}[data-density="quiet"] .dsh-meme-item{animation-duration:12s}#${ROOT_ID}[data-density="busy"] .dsh-meme-item{animation-duration:8.5s}.dsh-meme-live{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}@keyframes dshMemeFloat{0%{opacity:0;transform:translate3d(14px,0,0);filter:blur(0)}8%{opacity:var(--meme-opacity)}70%{opacity:calc(var(--meme-opacity) * .74)}100%{opacity:0;transform:translate3d(-8px,-58vh,0);filter:blur(var(--meme-blur))}}
+      #${ROOT_ID}{--meme-opacity:.86;--meme-blur:1px;position:fixed;z-index:2147483000;right:18px;bottom:14px;width:min(420px,calc(100vw - 32px));height:min(66vh,620px);pointer-events:none;font-family:ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif;color:var(--dsw-alias-label-primary,#fff);overflow:hidden}#${ROOT_ID}[data-enabled="false"]{display:none}.dsh-meme-lane{position:relative;width:100%;height:100%}.dsh-meme-item{--meme-accent:#8b7cff;position:absolute;right:var(--meme-x,0px);bottom:6px;display:inline-flex;align-items:center;gap:7px;max-width:calc(100% - var(--meme-x) - 6px);padding:6px 10px;border-radius:999px;background:linear-gradient(115deg,color-mix(in srgb,var(--meme-accent) 17%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-3,#29243a) 90%,transparent));border:1px solid color-mix(in srgb,var(--meme-accent) 54%,transparent);box-shadow:0 8px 28px rgba(0,0,0,.16);font-size:14px;line-height:1.4;white-space:nowrap;overflow:hidden;opacity:0;animation:dshMemeFloat 10.5s linear forwards;will-change:transform,opacity,filter}.dsh-meme-tone-think{--meme-accent:#8b7cff}.dsh-meme-tone-tool{--meme-accent:#f2a93b}.dsh-meme-tone-result{--meme-accent:#35bf9b}.dsh-meme-tone-done{--meme-accent:#ef70ad}.dsh-meme-tone-error{--meme-accent:#e56868}.dsh-meme-storage-status:empty,.dsh-meme-preview-status:empty{display:none}.dsh-meme-preview-button:disabled{opacity:.6;cursor:wait}#${ROOT_ID}[data-color-mode="mono"] .dsh-meme-item{--meme-accent:#9892aa}.dsh-meme-item-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;border-radius:50%;background:color-mix(in srgb,var(--meme-accent) 23%,transparent);font-size:12px;line-height:1}.dsh-meme-item-copy{min-width:0;overflow:hidden;text-overflow:ellipsis}#${ROOT_ID}[data-font="small"] .dsh-meme-item{font-size:12px}#${ROOT_ID}[data-font="large"] .dsh-meme-item{font-size:17px}#${ROOT_ID}[data-density="quiet"] .dsh-meme-item{animation-duration:12s}#${ROOT_ID}[data-density="busy"] .dsh-meme-item{animation-duration:8.5s}.dsh-meme-live{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}@keyframes dshMemeFloat{0%{opacity:0;transform:translate3d(14px,0,0);filter:blur(0)}8%{opacity:var(--meme-opacity)}70%{opacity:calc(var(--meme-opacity) * .74)}100%{opacity:0;transform:translate3d(-8px,-58vh,0);filter:blur(var(--meme-blur))}}
       .dsh-meme-nav{position:relative;background:transparent!important;border-color:transparent!important}.dsh-meme-nav:hover{background:var(--dsw-specific-sidebar-nav-item-hover,rgba(118,98,255,.08))!important}.dsh-meme-nav-active{background:var(--dsw-specific-sidebar-nav-item-active,rgba(118,98,255,.16))!important}.dsh-meme-native-inactive{background:transparent!important;border-color:transparent!important}.dsh-meme-nav-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px}.dsh-meme-nav-icon svg{width:16px;height:16px}.dsh-meme-settings-pane{box-sizing:border-box;flex:1;min-height:0;padding:0 24px 24px;overflow-y:auto}.dsh-meme-settings{box-sizing:border-box;margin:0;padding:18px;border:1px solid color-mix(in srgb,var(--dsw-alias-border-primary,#a9a1d4) 30%,transparent);border-radius:16px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-3,#29243a) 55%,transparent);display:grid;gap:12px}.dsh-meme-settings-title{font-size:16px;font-weight:650;line-height:1.4}.dsh-meme-settings-description,.dsh-meme-setting-hint{color:var(--dsw-alias-label-secondary,#9b96ac);font-size:12px;line-height:1.5}.dsh-meme-setting-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding-top:11px;border-top:1px solid color-mix(in srgb,var(--dsw-alias-border-primary,#a9a1d4) 18%,transparent)}.dsh-meme-setting-copy{display:grid;gap:2px;min-width:0}.dsh-meme-setting-label{font-size:14px;line-height:1.4}.dsh-meme-select,.dsh-meme-preview-button,.dsh-meme-custom textarea{box-sizing:border-box;border:1px solid var(--dsw-alias-border-primary,#6e6787);border-radius:9px;background:var(--dsw-alias-bg-layer-2,#201d2b);color:var(--dsw-alias-label-primary,#fff);font:inherit;padding:7px 9px}.dsh-meme-select{min-width:120px}.dsh-meme-preview-button{cursor:pointer}.dsh-meme-preview-button:hover{border-color:#7662ff;background:color-mix(in srgb,#7662ff 15%,var(--dsw-alias-bg-layer-2,#201d2b))}.dsh-meme-checkbox{width:18px;height:18px;accent-color:#7662ff}.dsh-meme-range{width:142px;accent-color:#7662ff}.dsh-meme-custom{display:grid;gap:8px;padding-top:11px;border-top:1px solid color-mix(in srgb,var(--dsw-alias-border-primary,#a9a1d4) 18%,transparent)}.dsh-meme-custom textarea{width:100%;resize:vertical}@media (max-width:700px){#${ROOT_ID}{right:10px;bottom:8px;width:calc(100vw - 20px);height:52vh}.dsh-meme-item{font-size:12px;max-width:96%}.dsh-meme-settings-pane{padding:0 14px 14px}.dsh-meme-setting-row{align-items:flex-start;flex-direction:column;gap:7px}.dsh-meme-select,.dsh-meme-range{width:100%}}
     `
     document.head.append(style)
   }
   function connect() {
     const source = new EventSource('/plugins/dsh-plugin-internet-meme/events')
-    source.onmessage = (event) => { try { const pulse = JSON.parse(event.data) as Pulse; if (settings.diagnostics) console.info('[internet-meme]', pulse); show(messageFor(pulse), pulse.kind) } catch (error) { if (settings.diagnostics) console.warn('[internet-meme] bad pulse', error) } }
+    source.onmessage = (event) => { try {
+      const pulse = JSON.parse(event.data) as Pulse
+      if (!pulse || !Object.hasOwn(pulseVisuals, pulse.kind)) return
+      if (pulse.previewId) {
+        if (pulse.previewId !== previewPending?.id) return
+        previewPending.received = true
+      }
+      if (settings.diagnostics) console.info('[internet-meme]', pulse)
+      show(messageFor(pulse), pulse)
+    } catch (error) { if (settings.diagnostics) console.warn('[internet-meme] bad pulse', error) } }
     source.onerror = () => { if (settings.diagnostics) console.info('[internet-meme] reconnecting event stream') }
   }
   const start = () => { installStyles(); mount(); new MutationObserver(injectSettingsNavigation).observe(document.body, { childList: true, subtree: true }); injectSettingsNavigation(); connect() }

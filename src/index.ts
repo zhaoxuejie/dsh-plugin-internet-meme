@@ -15,6 +15,7 @@ interface Pulse {
   toolName?: string
   callId?: string
   failed?: boolean
+  previewId?: string
 }
 
 interface ContextLike {
@@ -89,7 +90,11 @@ export function apply(ctx: ContextLike): void {
           res.end()
           return
         }
-        publish({ kind: 'tool-call', time: Date.now(), toolName: '预览模式' })
+        const previewId = req.headers['x-meme-preview-id']
+        if (previewId !== undefined && (typeof previewId !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(previewId))) {
+          res.writeHead(400); res.end(); return
+        }
+        publish({ kind: 'tool-call', time: Date.now(), toolName: '预览模式', previewId })
         res.writeHead(204)
         res.end()
       },
@@ -117,7 +122,7 @@ export function apply(ctx: ContextLike): void {
             kind: 'tool-result', time: event.time, seq: event.seq,
             callId: typeof data?.message?.source?.callId === 'string'
               ? data.message.source.callId : undefined,
-            failed: firstPart?.isError === true,
+            failed: typeof firstPart?.isError === 'boolean' ? firstPart.isError : undefined,
           })
           break
         }

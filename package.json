@@ -10,7 +10,9 @@
   "files": ["lib", "src", "cordis.patch.yml", "README.md"],
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
-    "prepare": "pnpm run build"
+    "prepare": "pnpm run build",
+    "test": "pnpm run build && node --test tests/*.test.mjs",
+    "typecheck:client": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom --skipLibCheck src/bridge.ts"
   },
   "devDependencies": {
     "tsdown": "^0.22.2",
