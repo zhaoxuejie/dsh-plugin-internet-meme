@@ -28,9 +28,22 @@
 - 已能在本机正常运行 DeepSeek Harness Web profile。
 - 已安装 Git、Node.js、pnpm 和 `dsh` CLI。
 
-### 从 GitHub 安装
+### 方式一：通过 DSH 直接安装
 
-在任意本地工作目录执行：
+这是普通用户推荐的安装方式，无需手动克隆源码：
+
+```powershell
+dsh plugin --profile web add github:zhaoxuejie/dsh-plugin-internet-meme#v0.4.4
+dsh --profile web --dump-config
+```
+
+该命令会将 GitHub 上的 `v0.4.4` 标签作为 DSH Web profile 的插件依赖安装。配置输出中应同时出现 `# == dsh-plugin-internet-meme` 与 `internet-meme-subtitles`；完成后，请自行重启对应的 DSH Web profile。
+
+首次从 Git 安装时，pnpm 可能提示需要允许本包执行 `prepare` 构建脚本。请按 CLI 对当前 profile 给出的提示授权构建，再重新执行上述安装命令。
+
+### 方式二：克隆源码后安装
+
+适合希望阅读源码、修改主题文案或参与开发的用户。在任意本地工作目录执行：
 
 ```powershell
 git clone https://github.com/zhaoxuejie/dsh-plugin-internet-meme.git
@@ -47,6 +60,8 @@ dsh --profile web --dump-config
 
 ### 启用与试听
 
+![DSH 中的热梗字幕配置页面](docs/settings.png)
+
 1. 打开或刷新 DSH Web 页面，进入“设置”。
 2. 在左侧选择“热梗字幕”。
 3. 保持“显示字幕”开启，点击“预览弹幕”确认字幕出现。
@@ -56,7 +71,13 @@ dsh --profile web --dump-config
 
 ## 更新
 
-从本仓库安装时，更新流程如下：
+通过 DSH 直接安装时，指定目标版本并重新安装：
+
+```powershell
+dsh plugin --profile web add github:zhaoxuejie/dsh-plugin-internet-meme#v0.4.4
+```
+
+从本仓库克隆源码安装时，更新流程如下：
 
 ```powershell
 git pull
