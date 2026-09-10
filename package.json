@@ -8,6 +8,24 @@
     ".": "./lib/index.js"
   },
   "files": ["lib", "src", "cordis.patch.yml", "README.md"],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "danmaku",
+    "meme",
+    "subtitle",
+    "web"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhaoxuejie/dsh-plugin-internet-meme.git"
+  },
+  "homepage": "https://github.com/zhaoxuejie/dsh-plugin-internet-meme#readme",
+  "bugs": {
+    "url": "https://github.com/zhaoxuejie/dsh-plugin-internet-meme/issues"
+  },
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
     "prepare": "pnpm run build",
